@@ -3,4 +3,4 @@ WORKDIR /app
 COPY main.ts .
 EXPOSE 8080
 USER deno
-CMD ["run", "--allow-net", "main.ts"]
+CMD ["run", "--allow-net", "--allow-env", "main.ts"]
