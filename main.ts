@@ -1,11 +1,9 @@
-import { serve } from "https://deno.land/std@0.201.0/http/server.ts";
-
 const PORT = Number(Deno.env.get("PORT") || 8080);
 const DECOY_URL = "https://seeking.com";
 const TOKEN_TTL_MS = 30_000;
 const tokens = new Map<string, number>();
 
-function randomString(len: number) {
+function randomString(len: number): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   let s = "";
   const bytes = crypto.getRandomValues(new Uint8Array(len));
@@ -13,7 +11,7 @@ function randomString(len: number) {
   return s;
 }
 
-function isBot(userAgent: string) {
+function isBot(userAgent: string): boolean {
   const bots = [
     "bot", "crawler", "spider", "curl", "wget", "python", "java", "perl",
     "headless", "phantom", "selenium", "puppeteer", "playwright", "webdriver",
@@ -23,7 +21,7 @@ function isBot(userAgent: string) {
   return bots.some((b) => ua.includes(b)) || ua.length < 20;
 }
 
-function missingHeaders(headers: Headers) {
+function missingHeaders(headers: Headers): boolean {
   return (
     !headers.get("accept") ||
     !headers.get("accept-language") ||
@@ -38,7 +36,7 @@ setInterval(() => {
   }
 }, 10_000);
 
-serve((req: Request) => {
+Deno.serve({ port: PORT }, (req: Request): Response => {
   try {
     const url = new URL(req.url);
     const headers = req.headers;
@@ -122,4 +120,4 @@ document.body.appendChild(s);
   } catch {
     return new Response("Error", { status: 500 });
   }
-}, { port: PORT });
+});
