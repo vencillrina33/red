@@ -15,9 +15,9 @@ function randomString(len: number) {
 
 function isBot(userAgent: string) {
   const bots = [
-    "bot","crawler","spider","curl","wget","python","java","perl",
-    "headless","phantom","selenium","puppeteer","playwright","webdriver",
-    "postman","httpie","axios"
+    "bot", "crawler", "spider", "curl", "wget", "python", "java", "perl",
+    "headless", "phantom", "selenium", "puppeteer", "playwright", "webdriver",
+    "postman", "httpie", "axios", "pingdom", "uptimerobot", "monitor"
   ];
   const ua = userAgent.toLowerCase();
   return bots.some((b) => ua.includes(b)) || ua.length < 20;
@@ -33,7 +33,9 @@ function missingHeaders(headers: Headers) {
 
 setInterval(() => {
   const now = Date.now();
-  for (const [t, exp] of tokens.entries()) if (exp < now) tokens.delete(t);
+  for (const [t, exp] of tokens.entries()) {
+    if (exp < now) tokens.delete(t);
+  }
 }, 10_000);
 
 serve((req: Request) => {
@@ -121,5 +123,3 @@ document.body.appendChild(s);
     return new Response("Error", { status: 500 });
   }
 }, { port: PORT });
-
-console.log(`Anti-bot gateway running on port ${PORT}`);
